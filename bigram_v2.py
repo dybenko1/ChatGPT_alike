@@ -70,21 +70,28 @@ class BigramLanguageModel(nn.Module):
         self.token_embdding_table = nn.Embedding(vocab_size, n_embd) # n_embd: number of embedding directions
         # to go from the token embeddings to the logits we need a linear layer
         self.lm_head = nn.Linear(n_embd, vocab_size) # lm_head : language model head. !! Why this dimension?
-        # OjO! we already abandoned the representation of tokens as integers. we now represent them as a vector of 32 dimensions
-        # that's the reason of n_embd=32. With this many directions (dims) each token can hold complex rich 
-        # meanings given the relationships with the other tokens (words).
-        # It is relevant to notice that we are still in the Bigram model, i.e. only a single token used
-        # to predict the "next" one. So for a single token we need to, again, get the probabilities of the 
-        # occurrence of each of the next tokens; like in the token_embedding_table.
-        # but now instead of hat table we will use a linear transformation to go from
-        # the token space (32 dim) into the vocab_size (the total numbers of characters). 
-        # So long story short: this linear layer will give us the probabilities of occurrence of any of the 
-        # vocabulary given a (input) token.
+        ## OjO! we already abandoned the representation of tokens as integers. we now represent them as a vector of 32 dimensions
+        ## that's the reason of n_embd=32. With this many directions (dims) each token can hold complex rich 
+        ## meanings given the relationships with the other tokens (words).
+        ## It is relevant to notice that we are still in the Bigram model, i.e. only a single token used
+        ## to predict the "next" one. So for a single token we need to, again, get the probabilities of the 
+        ## occurrence of each of the next tokens; like in the token_embedding_table.
+        ## but now instead of hat table we will use a linear transformation to go from
+        ## the token space (32 dim) into the vocab_size (the total numbers of characters). 
+        ## So long story short: this linear layer will give us the probabilities of occurrence of any of the 
+        ## vocabulary given a (input) token.
+
+        # We do not just need to encode the tokens given their identity (the word/meaning itself), but also the position
+        self.position_embedding_table = nn.Embedding(block_size, n_embd) # each position from 0 to block_size -1 will get its own embedding vector
 
     def forward(self, idx, targets=None):
+        B, T = idx.shape
         # idx and targets are both (B, T) tensor of integers
         tok_emb = self.token_embdding_table(idx) # (B, T, C)
-        logits = self.lm_head(tok_emb) # (B, T, vocab_size)
+        pos_emb = self.position_embedding_table(torch.arange(0, T, device=device)) # (T,C) From zero to T-1
+        x = tok_emb + pos_emb # (B,T,C). pos_em no tiene dim B (batch), pero pytorch hace su magia al sumar eso a cada 
+        ## batch. at the end the embedding of position i is the same regardless the batch. We just add that to our vector of n_embd dimensions
+        logits = self.lm_head(x) # (B, T, vocab_size)
 
         if targets is None:
             loss = None
