@@ -5,13 +5,15 @@ from torch.nn import functional as F
 
 # hyperparameters
 batch_size = 32
-block_size = 8
-max_iters = 3_000
-eval_interval = 300
-learning_rate = 1e-2
-device = 'mps' if torch.mps.is_available() else 'cpu'
+block_size = 8 
+max_iters = 5_000
+eval_interval = 500
+learning_rate = 1e-3 # self-attention block canoot tolerate high lr
+device = 'cpu' if torch.mps.is_available() else 'cpu' # cpu because for this small model the mps. option is slower
 eval_iters = 200
-n_embd = 32
+n_embd = 32 # Dimension of embedding vectors
+
+#dropout = 0.2
 
 #-------------
 
@@ -61,6 +63,40 @@ def estimate_loss():
     model.train()
     return out
 
+class Head(nn.Module):
+    """ one head of self-attention"""
+    # head size is the dimension of vectors where K, Q, V. They should not necessarily live all in the same dim, like in the deepblue3 video
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False) # Linear transformation from embeddding space to the space where head vectors (k,q,v) will live
+        self.query = nn.Linear(n_embd, head_size, bias=False) # Since the input is x and when encoded, its embedding (representation) we define it to live in n_embd we perform a linear transformation
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size))) # What does this does? is the prelude of 'wei'?
+        # Looks like the above line creates self.tril = ... But why define it in this way?
+        # Answer. This last line of code is to create a variable. called 'tril', that is NOT a parameter of the model
+        # so Pytorch denominate these type of variables (that are not parameters) "buffer" and we have
+        # to assign it to the module with this "register_buffer" function.
+        # So that line would be equivalent to "self.tril = torch.tril(torch.ones...)))""
+
+
+        #self.dropout = nn.Dropout(dropout) # What is this?
+
+    def forward(self, x):
+        # input of size (batch, time-step, channels)
+        B, T, C = x.shape 
+        q = self.query(x) # (B, T, hs), i.e. Batch size, block size, head dimension (head size)
+        k = self.key(x) # (B, T, hs)
+
+        # compute attention scores ('affinities'). **The formula of the paper**
+        wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) --> (B, T, T)
+        ##TODO Corregir linea del wei.masked**************************************************************
+        wei = wei.masked_fill(self.tril[:T,:T]==0, float('-inf')) # (B, T, T)
+        wei = F.softmax(wei, dim=-1) # (B, T, T)
+
+        v = self.value(x) # (B, T, hs). Aunque segun Andrej the dimension should be (B, T, C)
+
+        out = wei @ v #  (B, T, T) @ (B, T, hs) ---> (B, T, hs)
+        return out
 
 
 
@@ -72,6 +108,10 @@ class BigramLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a look up table
         self.token_embdding_table = nn.Embedding(vocab_size, n_embd) # n_embd: number of embedding directions
         # to go from the token embeddings to the logits we need a linear layer
+        # We do not just need to encode the tokens given their identity (the word/meaning itself), but also the position
+        self.position_embedding_table = nn.Embedding(block_size, n_embd) # each position from 0 to block_size -1 will get its own embedding vector
+        
+        self.sa_head = Head(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size) # lm_head : language model head. !! Why this dimension?
         ## OjO! we already abandoned the representation of tokens as integers. we now represent them as a vector of 32 dimensions
         ## that's the reason of n_embd=32. With this many directions (dims) each token can hold complex rich 
@@ -84,8 +124,7 @@ class BigramLanguageModel(nn.Module):
         ## So long story short: this linear layer will give us the probabilities of occurrence of any of the 
         ## vocabulary given a (input) token.
 
-        # We do not just need to encode the tokens given their identity (the word/meaning itself), but also the position
-        self.position_embedding_table = nn.Embedding(block_size, n_embd) # each position from 0 to block_size -1 will get its own embedding vector
+        
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -94,6 +133,8 @@ class BigramLanguageModel(nn.Module):
         pos_emb = self.position_embedding_table(torch.arange(0, T, device=device)) # (T,C) From zero to T-1
         x = tok_emb + pos_emb # (B,T,C). pos_em no tiene dim B (batch), pero pytorch hace su magia al sumar eso a cada 
         ## batch. at the end the embedding of position i is the same regardless the batch. We just add that to our vector of n_embd dimensions
+
+        x = self.sa_head(x) # apply one head of self-attention. (B,T,C)
         logits = self.lm_head(x) # (B, T, vocab_size)
 
         if targets is None:
@@ -110,8 +151,10 @@ class BigramLanguageModel(nn.Module):
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
+            # crop idx to the last block_size tokens
+            idx_cond = idx[:, -block_size:]
             # get the prediction
-            logits, loss = self(idx)
+            logits, loss = self(idx_cond)
             # We grab the logits of the last token (the only useful to predict)
             logits = logits[:, -1, :] # becomes (B, C). 
             # apply softmax to get probabilities 
