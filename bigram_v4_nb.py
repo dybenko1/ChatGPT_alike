@@ -98,6 +98,18 @@ class Head(nn.Module):
         out = wei @ v #  (B, T, T) @ (B, T, hs) ---> (B, T, hs)
         return out
 
+class FeedForward(nn.Module):
+  def __init__(self, n_embd):
+    super().__init__()
+    self.net = nn.Sequential(
+      nn.Linear(n_embd, n_embd),
+      nn.ReLU(),
+    )
+
+  def forward(self, x): # This linear layer is on token level, i.e. indepently each token "thinks" about the info they retrieve in the past (self-attention layer)
+    return self.net(x)
+
+
 
 
 # simple bigram model
@@ -112,6 +124,7 @@ class BigramLanguageModel(nn.Module):
         self.position_embedding_table = nn.Embedding(block_size, n_embd) # each position from 0 to block_size -1 will get its own embedding vector
         
         self.sa_head = Head(n_embd)
+        self.ffwd = FeedForward(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size) # lm_head : language model head. !! Why this dimension?
         ## OjO! we already abandoned the representation of tokens as integers. we now represent them as a vector of 32 dimensions
         ## that's the reason of n_embd=32. With this many directions (dims) each token can hold complex rich 
@@ -135,7 +148,12 @@ class BigramLanguageModel(nn.Module):
         ## batch. at the end the embedding of position i is the same regardless the batch. We just add that to our vector of n_embd dimensions
 
         x = self.sa_head(x) # apply one head of self-attention. (B,T,C)
-        logits = self.lm_head(x) # (B, T, vocab_size)
+        # When we developed the multi-head attention head we right away calculated the logits. This did not allow
+        # the tokens to "think" what they find about the other tokens (with the multi-head attention), this is why we implement
+        # a linear layer for the tokens to "grasp" what they found when they communicate with each other (in the self-attention layer)
+        x = self.ffwd(x) # (B,T, C)
+        logits = self.lm_head(x) # (B, T, vocab_size). 
+        
 
         if targets is None:
             loss = None
