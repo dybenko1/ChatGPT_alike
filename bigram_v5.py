@@ -133,10 +133,16 @@ class Block(nn.Module):
     head_size = n_embd // n_head
     self.sa = MultiHeadAttention(n_head, head_size)
     self.ffwd = FeedForward(n_embd)
+    self.ln1 = nn.LayerNorm(n_embd) ## Andrej showed the equivalent function of this function that come from a paper. And in here we deviate from the original "Attention is all you need" paper and apply it before, not after the attention heads
+    ## Ojo con las dimensiones. Aca la operacion de nromalziacion (mean of 1 and sd of 1) happens over 32 numbers (n_embd), so the batch and time as a batch dimen, both of them
+    ## So this is like a "per token" transformation. It normalizes the features at inizialization, but since therformula has the gamma and beta parameters, later the
+    ## norm Layer norm would produce outputs that may not be "standard" (meand 1 and sd 1)
+    ## OJO: I explain the importance of this layer in the commit.
+    self.ln2 = nn.LayerNorm(n_embd)
 
   def forward(self, x):
-    x = x + self.sa(x) # This is the residual part. We add the "x + "
-    x = x + self.ffwd(x) # This is the residual part. We add the "x + "
+    x = x + self.sa(self.ln1(x)) # This is the residual part. We add the "x + ". Here we then added the Layer Norm 1
+    x = x + self.ffwd(self.ln2(x)) # This is the residual part. We add the "x + ". Here we then added the Layer Norm 2
     return x
 
 
