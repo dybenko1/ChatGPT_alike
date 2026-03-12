@@ -104,16 +104,24 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embd, n_embd) # The pirpose of this projector is to take the output of the attention heads and project them back into the residual pathway. 
+        ## It is to map the output (of the heads) back to the data stream (x) dimension, so. there are not dimensionality mismatches; specially useful in situations when 
+        ## n_emd != n_heads * head_size
+        ## It also allows the model to learn wot to "mix and combine the information" from the different heads together, rather than just treating them as parallel streams of data
+        ## In our example there is no dimension msimatch, but the projector is still usefull bceause if we were to change the n_heads or the heads size it would always help to match dimensions
 
     def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1)
+      out = torch.cat([h(x) for h in self.heads], dim=-1)
+      out = self.proj(out)
+      return out
 
 class FeedForward(nn.Module):
   def __init__(self, n_embd):
     super().__init__()
     self.net = nn.Sequential(
-      nn.Linear(n_embd, n_embd),
+      nn.Linear(n_embd, 4 * n_embd),
       nn.ReLU(),
+      nn.Linear(4 * n_embd, n_embd), # For the "Residual". This is the projection layer back to the residual pathway. Here we fix a dimension mismatch
     )
 
   def forward(self, x): # This linear layer is on token level, i.e. indepently each token "thinks" about the info they retrieve in the past (self-attention layer)
@@ -127,8 +135,8 @@ class Block(nn.Module):
     self.ffwd = FeedForward(n_embd)
 
   def forward(self, x):
-    x = self.sa(x)
-    x = self.ffwd(x)
+    x = x + self.sa(x) # This is the residual part. We add the "x + "
+    x = x + self.ffwd(x) # This is the residual part. We add the "x + "
     return x
 
 
