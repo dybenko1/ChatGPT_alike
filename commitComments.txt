@@ -1,0 +1,4 @@
+0. Model architecture is smaller, check hyperparameters. Trained in my laptop.
+1. Allow saving model parameters after training via the torch.save() method.
+2. Allowing model to lead weights from previous saved ones. Then using .eval() to deactivate the "dropout".
+3. Success!!
