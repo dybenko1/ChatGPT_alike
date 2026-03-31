@@ -1,4 +1,5 @@
 import torch
+import time
 import torch.nn as nn
 from torch.nn import functional as F
 import os
@@ -9,8 +10,8 @@ batch_size = 32
 block_size = 256 
 max_iters = 4_000
 eval_interval = 500
-learning_rate = 6e-4 # self-attention block canoot tolerate high lr
-device = 'mps' if torch.mps.is_available() else 'cpu' # cpu because for this small model the mps. option is slower
+learning_rate = 6e-4 # self-attention block cannot tolerate high lr
+device = 'cpu' if torch.mps.is_available() else 'cpu' # cpu because for this small model the mps. option is slower
 eval_iters = 200
 n_embd = 384 # Dimension of embedding vectors
 n_head = 4
@@ -80,7 +81,9 @@ class Head(nn.Module):
         # to assign it to the module with this "register_buffer" function.
         # So that line would be equivalent to "self.tril = torch.tril(torch.ones...)))""
 
-        self.dropout = nn.Dropout(dropout)  # Adding dropout as regularization.
+        self.dropout = nn.Dropout(dropout)  # Adding dropout as regularization. This sets some neurons (Data, NOT weights to zero (by effect the weights that connect neurons/data are practically zero, but the real value (the weights is the same) )
+
+        
 
     def forward(self, x):
         # input of size (batch, time-step, channels)
@@ -90,12 +93,14 @@ class Head(nn.Module):
 
         # compute attention scores ('affinities'). **The formula of the paper**
         wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) --> (B, T, T)
-        ##TODO Corregir linea del wei.masked**************************************************************
         wei = wei.masked_fill(self.tril[:T,:T]==0, float('-inf')) # (B, T, T)
         wei = F.softmax(wei, dim=-1) # (B, T, T)
-        wei = self.dropout(wei) ## Randomly preventing some of the nodes from communicating 
+        wei = self.dropout(wei) ## Randomly preventing some of the nodes from communicating
+        # since the wei tells the relevance of one token againts past ones, the last step (dropout) tells the model:
+        # Ignore some of the past tokens, does not matter if they are important. 
+        # This dropout "ignores" communication between tokens. Applying dropout in the FeedForward is different, is dropping "features" (concepts), in here we are ust dropping Relationships (context).
 
-        v = self.value(x) # (B, T, hs). Aunque segun Andrej the dimension should be (B, T, C)
+        v = self.value(x) # (B, T, hs). 
 
         out = wei @ v #  (B, T, T) @ (B, T, hs) ---> (B, T, hs)
         return out
@@ -106,7 +111,7 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(n_embd, n_embd) # The pirpose of this projector is to take the output of the attention heads and project them back into the residual pathway. 
+        self.proj = nn.Linear(n_embd, n_embd) # The purpose of this projector is to take the output of the attention heads and project them back into the residual pathway. 
         ## It is to map the output (of the heads) back to the data stream (x) dimension, so. there are not dimensionality mismatches; specially useful in situations when 
         ## n_emd != n_heads * head_size
         ## It also allows the model to learn wot to "mix and combine the information" from the different heads together, rather than just treating them as parallel streams of data
@@ -174,7 +179,7 @@ class BigramLanguageModel(nn.Module):
         ## It is relevant to notice that we are still in the Bigram model, i.e. only a single token used
         ## to predict the "next" one. So for a single token we need to, again, get the probabilities of the 
         ## occurrence of each of the next tokens; like in the token_embedding_table.
-        ## but now instead of hat table we will use a linear transformation to go from
+        ## but now instead of that table we will use a linear transformation to go from
         ## the token space (32 dim) into the vocab_size (the total numbers of characters). 
         ## So long story short: this linear layer will give us the probabilities of occurrence of any of the 
         ## vocabulary given a (input) token.
@@ -186,7 +191,7 @@ class BigramLanguageModel(nn.Module):
         # idx and targets are both (B, T) tensor of integers
         tok_emb = self.token_embdding_table(idx) # (B, T, C)
         pos_emb = self.position_embedding_table(torch.arange(0, T, device=device)) # (T,C) From zero to T-1
-        x = tok_emb + pos_emb # (B,T,C). pos_em no tiene dim B (batch), pero pytorch hace su magia al sumar eso a cada 
+        x = tok_emb + pos_emb # (B,T,C). pos_emb no tiene dim B (batch), pero pytorch hace su magia al sumar eso a cada 
         ## batch. at the end the embedding of position i is the same regardless the batch. We just add that to our vector of n_embd dimensions
 
         #x = self.sa_heads(x) # apply the multi-head attention
@@ -213,11 +218,11 @@ class BigramLanguageModel(nn.Module):
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
-            # crop idx to the last block_size tokens
+            # crop idx to the last block_size tokens. Because Block_size is the maximum context window size
             idx_cond = idx[:, -block_size:]
             # get the prediction
-            logits, loss = self(idx_cond)
-            # We grab the logits of the last token (the only useful to predict)
+            logits, loss = self(idx_cond) ## We are calling python's "__call__" method from a class. In this case from the nn.Module is equivalent of calling "forward()" but with some extra functionality likr automatic gradient tracking, etc. "the __call__ method on nn.Module eventually calls forward along with taking care of tracing and hooks."
+            # We grab the logits of the last token (the only useful to predict). 
             logits = logits[:, -1, :] # becomes (B, C). 
             # apply softmax to get probabilities 
             probs = F.softmax(logits, dim=1) # (B, C)
@@ -227,6 +232,70 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
     
+
+
+def measure_generation_speed(model, idx, max_new_tokens):
+    """
+    Measures the total time and tokens per second for generation.
+    """
+    # 1. Warm up the GPU (prevents the first run from being artificially slow)
+    _ = model.generate(idx, max_new_tokens=5)
+    
+    # 2. Start the timer
+    if torch.mps.is_available():
+        torch.mps.synchronize() # Wait for GPU to be ready
+    
+    start_time = time.perf_counter()
+    
+    # 3. Run the actual generation
+    output_idx = model.generate(idx, max_new_tokens=max_new_tokens)
+    
+    # 4. End the timer
+    if torch.mps.is_available():
+        torch.mps.synchronize() # Wait for GPU to finish last token
+        
+    end_time = time.perf_counter()
+    
+    # 5. Calculate Metrics
+    total_time = end_time - start_time
+    tokens_per_sec = max_new_tokens / total_time
+    
+    print(f"--- Generation Statistics ---")
+    print(f"Total Time: {total_time:.4f} seconds")
+    print(f"Tokens Generated: {max_new_tokens}")
+    print(f"Speed: {tokens_per_sec:.2f} tokens/sec")
+    
+    return output_idx, total_time
+
+
+
+def measure_cpu_generation(model, idx, max_new_tokens):
+    # Ensure model is on CPU and in eval mode
+    model.cpu()
+    model.eval()
+    
+    # 1. Warm-up (Important for CPU caches and JIT optimizations)
+    with torch.no_grad():
+        _ = model.generate(idx, max_new_tokens=5)
+    
+    # 2. Start the timer
+    start_time = time.perf_counter()
+    
+    # 3. Run the generation
+    with torch.no_grad():
+        output_idx = model.generate(idx, max_new_tokens=max_new_tokens)
+    
+    # 4. End the timer
+    end_time = time.perf_counter()
+    
+    total_time = end_time - start_time
+    print(f"--- CPU Generation Statistics ---")
+    print(f"Total Time: {total_time:.4f} seconds")
+    print(f"Tokens/Sec: {max_new_tokens / total_time:.2f}")
+    
+    return output_idx, total_time
+
+# _____________________________
 model = BigramLanguageModel()
 
 # In case model was pre-trained we just load weights
@@ -234,8 +303,9 @@ weights = "SavedWeights/model_weight.pth"
 if os.path.exists(weights) and os.path.isfile(weights):
         # Load pre-saved model's weights
    model.load_state_dict(torch.load(weights, map_location=device))
+   print("Pre-trained weights loaded!")
 else: # Train the model...
-    print("HOLAXXXXX")
+    print("Training model...!")
     m = model.to(device)
     # create a Pytorch optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -266,7 +336,10 @@ m.eval() # Ultra relevant to turn off the "dropout" feature (that randomly ignor
 
 # generate from the model
 context = torch.zeros((1,1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+
+#output_idx, _ = measure_generation_speed(m, context, 500)
+output_idx, _ = measure_cpu_generation(m, context, 500)
+print(decode(output_idx[0].tolist()))
 
 
 

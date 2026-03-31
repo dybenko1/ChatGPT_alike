@@ -1,4 +1,4 @@
-0. Model architecture is smaller, check hyperparameters. Trained in my laptop.
-1. Allow saving model parameters after training via the torch.save() method.
-2. Allowing model to lead weights from previous saved ones. Then using .eval() to deactivate the "dropout".
-3. Success!!
+0. Created a timer for measuring generation time.
+1. Running time without KV cache on "GPU" is Total Time: 15.7; seconds; Tokens Generated: 500;Speed: 31.65 tokens/sec;
+2. Running time without KV cache on "CPU" is Total Time: 4.41; seconds; Tokens Generated: 500;Speed: 113.29 tokens/sec;
+
